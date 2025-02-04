@@ -38,7 +38,7 @@ struct Args {
 async fn main() -> Result<()> {
   tracing_subscriber::fmt::init();
 
-  let args = Args::try_parse()?;
+  let args = Args::parse();
   let (path, file) = get_path(args.path).await?;
 
   let serve_dir = ServeDir::new(&path)
