@@ -1,65 +1,69 @@
 {
-  description = "Static file serve";
-
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
-    flake-utils.url = "github:numtide/flake-utils";
+
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
-    self,
     nixpkgs,
     crane,
-    flake-utils,
+    fenix,
     ...
-  }:
-    flake-utils.lib.eachDefaultSystem (system: let
-      pkgs = nixpkgs.legacyPackages.${system};
-      inherit (pkgs) lib;
+  }: let
+    systems = ["x86_64-linux" "aarch64-darwin"];
 
-      craneLib = crane.mkLib pkgs;
-      src = let
-        htmlFilter = path: _type: builtins.match ".*html$" path != null;
-        htmlOrCargo = path: type:
-          (htmlFilter path type) || (craneLib.filterCargoSources path type);
-      in
-        lib.cleanSourceWith {
-          src = ./.;
-          filter = htmlOrCargo;
-          name = "source";
-        };
+    perSystem = f:
+      nixpkgs.lib.foldAttrs nixpkgs.lib.mergeAttrs {}
+      (map (s: nixpkgs.lib.mapAttrs (_: v: {${s} = v;}) (f s)) systems);
+  in
+    perSystem (system: let
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [fenix.overlays.default];
+      };
 
-      commonArgs = {
+      craneLib =
+        (crane.mkLib pkgs).overrideToolchain
+        pkgs.fenix.stable.toolchain;
+
+      src = pkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = pkgs.lib.fileset.unions [
+          ./src/not-found.html
+          (craneLib.fileset.commonCargoSources ./.)
+        ];
+      };
+
+      args = {
         inherit src;
         strictDeps = true;
       };
 
-      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-      serve = craneLib.buildPackage (commonArgs // {inherit cargoArtifacts;});
+      cargoArtifacts = craneLib.buildDepsOnly args;
+      package = craneLib.buildPackage (args // {inherit cargoArtifacts;});
+      cargoClippyExtraArgs = "--all-targets -- --deny warnings";
     in {
+      devShells.default = craneLib.devShell {inputs-from = [package];};
+
       checks = {
-        inherit serve;
+        inherit package;
 
-        serve-clippy = craneLib.cargoClippy (commonArgs
-          // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
-          });
-
-        serve-doc = craneLib.cargoDoc (commonArgs // {inherit cargoArtifacts;});
-        serve-fmt = craneLib.cargoFmt {inherit src;};
-
-        serve-toml-fmt = craneLib.taploFmt {
-          src = pkgs.lib.sources.sourceFilesBySuffices src [".toml"];
-        };
+        fmt = craneLib.cargoFmt (args // {inherit cargoArtifacts;});
+        fmt-toml = craneLib.taploFmt {src = pkgs.lib.sources.sourceFilesBySuffices src [".toml"];};
+        test = craneLib.cargoTest (args // {inherit cargoArtifacts;});
+        clippy = craneLib.cargoClippy (args // {inherit cargoArtifacts cargoClippyExtraArgs;});
       };
 
-      packages.default = serve;
-      apps.default = flake-utils.lib.mkApp {drv = serve;};
-
-      devShells.default = craneLib.devShell {
-        checks = self.checks.${system};
+      packages.default = package;
+      apps.default = {
+        type = "app";
+        program = "${package}/bin/serve";
+        meta.description = "Serve a directory with a single command";
       };
     });
 }
