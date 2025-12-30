@@ -17,9 +17,9 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-  /// The port to listen on
-  #[arg(short, long, default_value_t = 5000)]
-  port: u16,
+  /// The port to listen on (default: random free port)
+  #[arg(short, long)]
+  port: Option<u16>,
 
   /// The address to listen on
   #[arg(short, long, default_value_t = String::from("127.0.0.1"))]
@@ -49,14 +49,18 @@ async fn main() -> Result<()> {
     .fallback_service(serve_dir)
     .layer(middleware::from_fn(log));
 
-  let addr = format!("{}:{}", args.bind, args.port).parse::<SocketAddr>()?;
+  let port = args.port.unwrap_or(0);
+  let addr = format!("{}:{}", args.bind, port).parse::<SocketAddr>()?;
   let listener = tokio::net::TcpListener::bind(addr).await?;
+
+  // Get the actual bound address (in case we got a random port for 0)
+  let actual_addr = listener.local_addr()?;
 
   let handle = tokio::spawn(async move {
     info!(
       "Serving {} on {}",
       path.to_string_lossy().blue(),
-      addr.to_string().green()
+      actual_addr.to_string().green()
     );
     axum::serve(listener, app).await
   });
@@ -64,8 +68,8 @@ async fn main() -> Result<()> {
   if args.open {
     let url = format!(
       "http://{}:{}{}",
-      args.bind,
-      args.port,
+      actual_addr.ip(),
+      actual_addr.port(),
       file.map_or_else(String::new, |f| format!("/{}", f))
     );
 
